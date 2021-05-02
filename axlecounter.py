@@ -1,39 +1,79 @@
-# BITA - Basic IP Traffic Analyzer
+#!/usr/bin/python3
+#
+# Axle Counter
+#
+# written by Thomas Schlesinger, schlesix@gmail.com
+#
+# The programm compares to pcap/pcapng file and list the packets
+# being in the first file, but not in the second one.
+# 
+# It auto-syncs the start of the two files, meaning
+# - it searches the first packet occuring in both files and ignoring
+#   the noise before that point.
+# The idea behind it is that you often aren't able to take to captures,
+# starting with the very same packet at to points simultaneously.
+#
+# The differences are written in a report file (plain text) and can be
+# printed on the console, if desired.
+#
+# The application is cli-only at the moment, but I want do add GUI support.
 
+# Import necessary Python modules
 import argparse
 import os
 import sys
 import logging
 import hashlib
+# The next line supresses unwanted messages from the scapy module
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 import getopt
 import binascii
 
-# Import für GUI
+# Import for GUI
 import tkinter as tk
 from tkinter import * 
 
+# For later use (GUI)
 #main_window = tk.Tk()
 
 # Build Number
-buildno = "2021.05.01.1947"
+buildno = "2021.05.02.2028"
 
-# Tupel für Paket-Metadaten
+# Tupel for packet metadata
 capture_metadata1 = []
 capture_metadata2 = []
+
+# Paths of the pcap-files to compare
 input_files = []
 
-# Indizes für die Metadaten-Felder
-
+# Indexes for the fields in the metadata, used for easy
+# reordering and expansion 
 idx_packet_no = 0
+idx_hash = 0
 idx_src_ip = 0
 idx_dst_ip = 0
-# Beim Start übergebene Parameter
-arg_show_packets = False # Anzeigen von Diffs auf der CLI
-arg_limit_list = 0 # Begrenzen der Diff-Liste auf n Einträge
-arg_report_filename="" # Name der Ausgabedatei
+idx_ip_ident = 0
+idx_ip_len = 0
+idx_l4_proto = 0
+idx_tcp_src_prt = 0
+idx_tcp_dst_prt = 0
+idx_tcp_seq = 0
+idx_tcp_ack = 0
+idx_tcp_flgs = 0
+idx_udp_src_prt = 0
+idx_udp_dst_prt = 0
 
+# Arguments from program call (cli)
+# 
+# Show diffs on cli
+arg_show_packets = False
+# Limit reported diffs in volume
+arg_limit_list = 0 
+# Path of the report file
+arg_report_filename=""
+
+# Not currently used, some GUI code
 def zeige_diff():
     global capture_metadata1
     global capture_metadata2
@@ -91,7 +131,20 @@ def zeige_diff():
 
 
 def process_pcap(file_name, metadata):
-    # Indizes für die Metadaten
+    """
+    Reads a pcap(ng) file and extracts the metadata into a list
+
+    Parameters:
+    - filename -> Path to pcap(ng) file
+    - metadata -> list for storing the metadata
+    """
+
+    # Indexes of the metadata
+    #
+    # Metadata is being added in this function, therefore it is the place where reordering
+    # of the sequence will occur.
+    # The position of the metada field in a 'row' is consequently set here as well.
+    #
     global idx_packet_no
     global idx_hash
     global idx_src_ip
@@ -107,75 +160,130 @@ def process_pcap(file_name, metadata):
     global idx_udp_src_prt
     global idx_udp_dst_prt
 
-# Es gibt auch Pakete ohne Identification (Wert ist auf 0 gesetzt). 
-# Um ein Paket in diesem Fall eindeutig zu identifizieren, wird ein Hash-Value aus den Rohdaten des Paketes errechnet, ansonsten aus ein paar Header-Daten (ist das eventuell ein Probem bei virtuellen IPs?).
+# Opening a pcap(ng) file dor reading
+# 
+# TODO: 
+# - implement try, except
+# - research speed optimization for hash calculation (other algorithm?)
+# - 'prettify' TCP Flags
+#   
     print('Reading PCAP {}...'.format(file_name))
     packets = rdpcap(file_name)
+    # Give some livesign to user
     print(str(len(packets))+" Frames read.")
     print("Extracting Metadata from PCAP...")
-    count=0
-    #global capture_metadataw
+    
+    # Packet counter for easier location of packets in other software, like Wireshark
+    packet_count=0
+    # Iterate through all packets in the capture file
     for packet in packets:
-        count=count+1
+        packet_count=packet_count+1
+        # Ignore packet that are no IP packets
         if 'IP' in packet:
+            # metadata for the current packet
             packetdaten = []
-            # Hash berechnen
+            packetdaten.append(packet_count)
+            idx_packet_no = 0
+            # Sometimes, the packets don't have a proper value in the identification field.
+            # This makes it hard to compare two packets.
+            # My workaround: calculation a hash on the payload and use that to identify packets.
+            #
+            # Calculate and write hash value to metadata 'column'
             raw_packet=str(packet['IP'].payload) 
             hash_object=hashlib.sha256(raw_packet.encode('utf-8'))
             hex_dig=hash_object.hexdigest()
-            packetdaten.append(count) 
-            idx_packet_no = 0
             packetdaten.append(hex_dig)
             idx_hash = 1
+            # Write Source IP to metadata 'column'
             packetdaten.append(str(packet['IP'].src)) 
             idx_src_ip = 2
+            # Write Destination IP to metadata 'column'
             packetdaten.append(str(packet['IP'].dst))
             idx_dst_ip = 3
+            # Write IP Identification to metadata 'column' (no always proper set)
             packetdaten.append(str(packet['IP'].id))
             idx_ip_ident = 4
+            # Write Length of IP Packet (Layer 3) to metadata 'column'
             packetdaten.append(str(packet['IP'].len))
             idx_ip_len = 5         
-            #xy=str(packet['IP'].src)+";"+str(packet['IP'].dst)+";"+str(packet['IP'].id)
-            #eintrag=str(hex_dig)+";"+str(packet['IP'].src)+";"+str(packet['IP'].dst)+";"+str(packet['IP'].id)
+            # Handling TCP 
             if 'TCP' in packet:
+                # Write L4 protocol type to metadata 'column'
                 packetdaten.append("TCP")
                 idx_l4_proto = 6   
+                # Write TCP source port to metadata 'column'
                 packetdaten.append(str(packet['TCP'].sport))
                 idx_tcp_src_prt = 7
+                # Write TCP destination port to metadata 'column'
                 packetdaten.append(str(packet['TCP'].dport))
                 idx_tcp_dst_prt = 8
+                # Write TCP sequence number to metadata 'column'
                 packetdaten.append(str(packet['TCP'].seq))
                 idx_tcp_seq = 9
+                # Write TCP acknowledgement number to metadata 'column'               
                 packetdaten.append(str(packet['TCP'].ack))
                 idx_tcp_ack = 10 
+                # Write TCP flags to metadata 'column'             
                 packetdaten.append(str(packet['TCP'].flags))
                 idx_tcp_flgs = 11
+            # Handling UDP
             elif 'UDP' in packet:
+                # Write L4 protocol type to metadata 'column'
                 packetdaten.append("UDP")
                 idx_l4_proto = 6    
+                # Write UDP source port to metadata 'column'
                 packetdaten.append(str(packet['UDP'].sport))
                 idx_udp_src_prt = 7
+                # Write UDP destination port to metadata 'column'
                 packetdaten.append(str(packet['UDP'].dport))
                 idx_udp_dst_prt = 8
+                # Write empty values to unused field for metadata 'column'
                 packetdaten.append("./.") # 9
                 packetdaten.append("./.") # 10
                 packetdaten.append("./.") # 11            
-                #eintrag=eintrag+";UDP"
-                #eintrag=eintrag+";"+str(packet['UDP'].sport)+";"+str(packet['UDP'].dport)
+            # Neither TCP nor UDP
             else:
+                # Write empty values to unused field for metadata 'column'
                 packetdaten.append("./.")  #6        
                 packetdaten.append("./.")  #7 
                 packetdaten.append("./.")  #8      
                 packetdaten.append("./.")  #9         
                 packetdaten.append("./.")  #10
                 packetdaten.append("./.")  #11
+            # Append metadata for current packet in list (sublist in list)
             metadata.append(packetdaten)
             #metadata.append(eintrag)
 
 def usage():
-    print("RTFM!")
+    """
+    Show usage information
+
+    """  
+
+    print("""
+    Diff two pcap(ng) files
+    Created by Thomas Schlesinger <schlesix@gmail.com>
+    Version 0.0.1
+
+    Parameters:
+
+    -i <input_file>  (use two times to specify pcap files)
+    -o <output_file> (path to report file)
+    -d (display output on stdout, too) 
+    -z (limit output to n lines)
+ 
+    Example:
+    
+    axlecounter.py -i client.pcapng -i server.pcapng -d -z 20 -o report.txt
+ 
+    """)
+    sys.exit(1)
 
 def getparam():
+    """
+    Get command line parameters and set global vars accordingly.
+
+    """  
     global input_files
     global arg_show_packets
     global arg_limit_list
@@ -183,44 +291,43 @@ def getparam():
     try:
         cmd_opts = "cf:i:L:lo:z:qrd"
         opts, args = getopt.getopt(sys.argv[1:], cmd_opts)
+        if len(opts)==0:
+            usage()     
     except getopt.GetoptError:
-        print("F:" + getopt.GetoptError)
         usage()
     for opt in opts:
+        # Input files (pcaps)
         if opt[0] == "-i":
             input_files.append(opt[1])
+        # Display result to stdout, too
         if opt[0] == "-d":
             arg_show_packets = True
+        # Limit report size to first n hits
         if opt[0] == "-z":
             arg_limit_list=int(opt[1])
+        # Specify path to report file
         if opt[0] == "-o":
             arg_report_filename=opt[1]
-def find_startingoffset_alt():
-    global capture_metadata1
-    global capture_metadata2
-    offset=0
-    i=0
-    while i<len(capture_metadata1) and offset==0:
-        try:
-            offset = capture_metadata2.index(capture_metadata1[i])-i
-        except ValueError:
-            print("fso:Fehler!")
-            offset = 0
-        if offset>0:
-            return i+1, i+1+offset;
-            print("Erste gemeinsame Zeile "+str(i+1)+": "+capture_metadata1[i]+" -> "+str(i+1+offset))
-            break
-        i=i+1
-    return 0,0; 
+
 
 def find_startingoffset():
-    global idx_hash
+    """
+    Cut 'noise' by finding the first packet from input file 1 that occurs in input file 2
+    and return its offset in input file 2
 
+    """  
+
+    # Use global vars
+    global idx_hash
     global capture_metadata1
     global capture_metadata2
+    # Starting point in input file 2 (return value)
     offset=0
+    # Counter
     i=0
     j=0
+    # Iterate through each packet of input file 1 and check, wether it occurs in input file 2.
+    # If so, return the position in input file 1 and its position in input file 2
     while i<len(capture_metadata1) and offset==0:
         j=0
         row=capture_metadata1[i]
@@ -238,7 +345,11 @@ def find_startingoffset():
 
 
 def find_endingoffset():
-    # Muss noch anständig programmiert werden, kann so nicht funktionieren
+    # Not yet usable
+    #
+    # TODO:
+    # - make it work 
+    #
     global capture_metadata1
     global capture_metadata2
     offset=0
@@ -258,13 +369,23 @@ def find_endingoffset():
     return 0,0; 
 
 def find_checksum(chksum):
+    """
+    Find a given checksum in metadata for input file 2
+
+    """  
     for record in capture_metadata2:
         if record[1]==chksum:
             return 1
     return 0
 
 def print_missing_packets(source_file_name, report_file_name, max, start_at_line):
-    # Feldindizes Metadaten
+    """
+    - Report packets that are in input file 1, but not in input file 2.
+    - Write result to report file.
+    - Limit list size to 'max' entries
+    - Start at packet 'packet_line'
+    """ 
+    # Field indexes metadata
     global idx_packet_no
     global idx_hash
     global idx_src_ip
@@ -282,62 +403,73 @@ def print_missing_packets(source_file_name, report_file_name, max, start_at_line
 
     global arg_show_packets
     global arg_limit_list
-    # Verbesserungen:
-    # TCP-Flags, z. B. [FIN,ACK]
-    # Seq=... , Ack=..., Win=..., Len=...
+    # TODO:
+    # - TCP-Flags, z. B. [FIN,ACK]
+    # - Seq=... , Ack=..., Win=..., Len=...
     print("Finding missing packets...")
+    # Create report file
     if os.path.exists(report_file_name):
         os.remove(report_file_name)
     L3TrafficFile = open(report_file_name, 'w')
-    L3TrafficFile.write("# Created with ls , Build " + buildno+"\n")
+    # Write Header in report file
+    L3TrafficFile.write("# Created with Axle Counter , Build " + buildno+"\n")
     L3TrafficFile.write("# Source file: " +source_file_name+"\n")
+    # 
     if (start_at_line>0):
         L3TrafficFile.write("Starting at Packet " + str(start_at_line)+ " (first common packet)\n")
         print("Starting at Packet " + str(start_at_line)+ " (first common packet)\n")
     L3TrafficFile.write("k\n")
+    # Counter for reported lines
     i=0
     listsize=0
+    # Iterate through all packets in input file 1
     for record in capture_metadata1:
-        # Gewünschten Maximalwert von Listeneinträgen nicht überschreiten
+        # Check, if already max lines are reported -> exit
         if listsize>=arg_limit_list:
             break
-        # Prüfen, ob in beide
-        # if 5 in [data.n for data in myList]:
+        # Check, if packet from input file 1 is also in inout file 2 (hash value)
         if  find_checksum(record[idx_hash])==0:
+            # If so, write report line
             reportline='{:6s}'.format(str(record[idx_packet_no]).rjust(5))
             reportline=reportline+'{:13s}'.format(str(record[idx_src_ip]))+" -> "+'{:13s}'.format(str(record[idx_dst_ip]))
             reportline=reportline+' '+'{:5s}'.format(str(record[idx_l4_proto]))
+            # Write UDP information
             if record[idx_l4_proto]=="UDP":
                 reportline=reportline+' '+'{:5s}'.format(str(record[idx_udp_src_prt]))+" -> "+'{:5s}'.format(str(record[idx_udp_dst_prt]))
+            # Write TCP information
             if record[6]=="TCP":
                 reportline=reportline+' '+'{:5s}'.format(str(record[idx_tcp_src_prt]))+" -> "+'{:5s}'.format(str(record[idx_tcp_src_prt]))
                 reportline=reportline+' '+'{:10s} Flags:'.format(str(record[idx_tcp_flgs]))        
             reportline=reportline+" (IP Len="+(str(record[idx_ip_len]))+" Byte)"
+            # Note the offset
             if i>=start_at_line:
                 L3TrafficFile.write(str(reportline)+'\n')
                 listsize=listsize+1
                 if arg_show_packets==True:
                     print(reportline)
             i=i+1
-
     L3TrafficFile.close()
     return 0
 
 def main():
+    """
+    - Main function.
+    """ 
     global input_files
     global arg_report_filename
-    print("Axle Counter, Build "+buildno)
+    print("\nAxle Counter, Build "+buildno)
     getparam()
-    #for zeile in input_files:
-    #    process_pcap(zeile)
+    # Check, if two input files are given
     if len(input_files)!=2:
         print("Please name two input files (-i filename)!")
     else:
+        # Read input files
         process_pcap(input_files[0], capture_metadata1)
         process_pcap(input_files[1], capture_metadata2)
+        # Seach for offset (first usable packet for comparison)
         print("Detecting starting offset...")
         first_common_line1, first_common_line2 = find_startingoffset()
-        #print("First common line: "+str(first_common_line1)+" / "+str(first_common_line2))
+        # If no output file name is given, create one
         if arg_report_filename=="":
             arg_report_filename=input_files[0]+".txt"
         print_missing_packets(input_files[0], arg_report_filename,arg_limit_list,first_common_line1)
