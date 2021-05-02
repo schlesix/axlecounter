@@ -38,7 +38,7 @@ from tkinter import *
 #main_window = tk.Tk()
 
 # Build Number
-buildno = "2021.05.02.2028"
+buildno = "2021.05.02.2139"
 
 # Tupel for packet metadata
 capture_metadata1 = []
@@ -63,6 +63,9 @@ idx_tcp_ack = 0
 idx_tcp_flgs = 0
 idx_udp_src_prt = 0
 idx_udp_dst_prt = 0
+
+# TCP flags
+tcp_flags = {0x02: "syn", 0x40: "reset", 0x11: "fin ack", 0x10: "ack", 0x12: "syn ack", 0x18: "psh ack"}
 
 # Arguments from program call (cli)
 # 
@@ -378,6 +381,35 @@ def find_checksum(chksum):
             return 1
     return 0
 
+def expand_tcp_flags(flag_code):
+    """
+    Convert a one character tcp flag to a three character tcp flag
+
+    """
+    retval=""
+    for character in flag_code:
+        if character=="S":
+            retval=retval+" SYN"
+        elif character=="P":
+            retval=retval+" PSH"
+        elif character=="F":
+            retval=retval+" FIN"
+        elif character=="C":
+            retval=retval+" CWR"
+        elif character=="R":
+            retval=retval+" RST"
+        elif character=="U":
+            retval=retval+" URG"           
+        elif character=="E":
+            retval=retval+" ECE"  
+        elif character=="A":
+            retval=retval+" ACK"
+        else:
+            retval=retval=character
+    retval=retval.strip()
+    return retval
+
+
 def print_missing_packets(source_file_name, report_file_name, max, start_at_line):
     """
     - Report packets that are in input file 1, but not in input file 2.
@@ -404,7 +436,6 @@ def print_missing_packets(source_file_name, report_file_name, max, start_at_line
     global arg_show_packets
     global arg_limit_list
     # TODO:
-    # - TCP-Flags, z. B. [FIN,ACK]
     # - Seq=... , Ack=..., Win=..., Len=...
     print("Finding missing packets...")
     # Create report file
@@ -431,7 +462,7 @@ def print_missing_packets(source_file_name, report_file_name, max, start_at_line
         if  find_checksum(record[idx_hash])==0:
             # If so, write report line
             reportline='{:6s}'.format(str(record[idx_packet_no]).rjust(5))
-            reportline=reportline+'{:13s}'.format(str(record[idx_src_ip]))+" -> "+'{:13s}'.format(str(record[idx_dst_ip]))
+            reportline=reportline+'{:15s}'.format(str(record[idx_src_ip]))+" -> "+'{:15s}'.format(str(record[idx_dst_ip]))
             reportline=reportline+' '+'{:5s}'.format(str(record[idx_l4_proto]))
             # Write UDP information
             if record[idx_l4_proto]=="UDP":
@@ -439,8 +470,9 @@ def print_missing_packets(source_file_name, report_file_name, max, start_at_line
             # Write TCP information
             if record[6]=="TCP":
                 reportline=reportline+' '+'{:5s}'.format(str(record[idx_tcp_src_prt]))+" -> "+'{:5s}'.format(str(record[idx_tcp_src_prt]))
-                reportline=reportline+' '+'{:10s} Flags:'.format(str(record[idx_tcp_flgs]))        
-            reportline=reportline+" (IP Len="+(str(record[idx_ip_len]))+" Byte)"
+                # TCP flag more verbose (one character to three characters)
+                reportline=reportline+' ['+expand_tcp_flags(str(record[idx_tcp_flgs]))+'] '   
+                reportline=reportline+" (IP Len="+(str(record[idx_ip_len]))+" Byte)"
             # Note the offset
             if i>=start_at_line:
                 L3TrafficFile.write(str(reportline)+'\n')
